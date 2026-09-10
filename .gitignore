@@ -6,3 +6,8 @@ xcuserdata/
 .swiftpm/
 *.app
 *.appex
+
+build/
+snapshot.json
+*.p12
+*.pem
