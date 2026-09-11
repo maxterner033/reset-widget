@@ -90,7 +90,11 @@ struct WidgetResetView: View {
                 HStack {
                     Text(label).font(.caption).bold()
                     Spacer()
-                    if usage?.authExpired == true {
+                    if usage?.accessRequired == true {
+                        Link(destination: keychainAccessURL) {
+                            Text("нужен доступ").font(.caption2).foregroundStyle(.red).underline()
+                        }
+                    } else if usage?.authExpired == true {
                         Text("вход истёк").font(.caption2).foregroundStyle(.red)
                     } else if usage?.errorMessage != nil {
                         Text("ошибка").font(.caption2).foregroundStyle(.red)
@@ -301,11 +305,21 @@ struct WidgetResetView: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// Клик по "нужен доступ" — Host читает запись Claude Code в Keychain уже
+    /// с системным диалогом. В фоне он этого не делает нарочно, чтобы диалог
+    /// не выскакивал посреди работы.
+    private var keychainAccessURL: URL { URL(string: "widgetreset://keychain-access")! }
+
     /// Ошибка/протухший вход занимают место подписи тарифа — отдельного слота
     /// под них в макете нет, а одновременно с тарифом они не нужны.
     @ViewBuilder
     private func statusLabel(for usage: ProviderUsage?, size: CGFloat) -> some View {
-        if usage?.authExpired == true {
+        if usage?.accessRequired == true {
+            Link(destination: keychainAccessURL) {
+                statusText("НУЖЕН ДОСТУП", size: size, style: alarmStyle)
+                    .underline()
+            }
+        } else if usage?.authExpired == true {
             statusText("ВХОД ИСТЁК", size: size, style: alarmStyle)
         } else if usage?.errorMessage != nil {
             statusText("ОШИБКА", size: size, style: alarmStyle)

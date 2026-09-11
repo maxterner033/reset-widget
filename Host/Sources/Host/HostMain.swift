@@ -51,13 +51,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Ссылки в плитке виджета открывают `widgetreset://<host>` (схема
     /// зарегистрирована в App/Info.plist) — LaunchServices запускает Host и
     /// вызывает этот делегатский метод вместо Apple Event-обвязки.
-    /// `settings` открывает окно настроек; `both`/`claude`/`codex` — это
+    /// `settings` открывает окно настроек; `keychain-access` — чтение записи
+    /// Claude Code с системным диалогом (единственное место, где он
+    /// разрешён); `both`/`claude`/`codex` — это
     /// переключение вкладки, оно не активирует и не показывает Host —
     /// просто тихо переписывает уже известные данные с новой вкладкой.
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls where url.scheme == "widgetreset" {
             if url.host == "settings" {
                 showSettingsWindow()
+            } else if url.host == "keychain-access" {
+                HostMain.requestKeychainAccess()
             } else if let tab = url.host.flatMap(WidgetTab.init(rawValue:)) {
                 HostMain.applyTabChange(tab)
             }
@@ -101,6 +105,11 @@ enum HostMain {
     /// поэтому срабатывает мгновенно, а не ждёт следующего 5-минутного цикла.
     private static var lastSnapshot: Snapshot?
 
+    /// Токен Claude, прочитанный из Keychain. Пока API его принимает, к чужой
+    /// записи не прикасаемся вообще — перечитываем только после 401, когда
+    /// Claude Code, вероятно, уже положил туда свежий токен.
+    private static var cachedCredentials: ClaudeCredentials?
+
     static func log(_ message: String) {
         FileHandle.standardError.write((message + "\n").data(using: .utf8)!)
     }
@@ -116,8 +125,15 @@ enum HostMain {
         publish(updated)
     }
 
-    static func updateSnapshot() async {
-        async let claudeUsage = fetchClaudeUsage()
+    /// Клик по "нужен доступ" в виджете: единственный сценарий, в котором
+    /// Host читает связку с интерфейсом — диалог появляется в ответ на
+    /// действие пользователя, а не сам по себе.
+    static func requestKeychainAccess() {
+        Task { await updateSnapshot(allowKeychainUI: true) }
+    }
+
+    static func updateSnapshot(allowKeychainUI: Bool = false) async {
+        async let claudeUsage = fetchClaudeUsage(allowKeychainUI: allowKeychainUI)
         async let codexUsage = fetchCodexUsage()
 
         let snapshot = await Snapshot(generatedAt: Date(), claude: claudeUsage, codex: codexUsage, selectedTab: currentTab())
@@ -149,23 +165,49 @@ enum HostMain {
         }
     }
 
-    static func fetchClaudeUsage() async -> ProviderUsage {
+    static func fetchClaudeUsage(allowKeychainUI: Bool = false) async -> ProviderUsage {
         do {
-            log("→ читаю Keychain...")
-            let creds = try ClaudeKeychain.load()
+            let creds: ClaudeCredentials
+            let fromCache = cachedCredentials != nil
+            if let cached = cachedCredentials {
+                creds = cached
+            } else {
+                log("→ читаю Keychain (\(allowKeychainUI ? "с диалогом" : "без диалога"))...")
+                creds = try await ClaudeKeychain.load(allowUI: allowKeychainUI)
+                cachedCredentials = creds
+            }
             log("→ токен получен, зову api.anthropic.com/oauth/usage...")
-            let usage = try await ClaudeUsageAPI.fetch(accessToken: creds.accessToken)
+            let usage: ProviderUsage
+            do {
+                usage = try await ClaudeUsageAPI.fetch(accessToken: creds.accessToken)
+            } catch ClaudeUsageAPIError.unauthorized where fromCache {
+                // Кешированный токен протух. Claude Code, скорее всего, уже
+                // обновил запись — перечитываем один раз; если там тот же
+                // токен, значит нужен повторный логин, а не наш кеш.
+                log("→ claude: 401 на кешированном токене — перечитываю Keychain...")
+                cachedCredentials = nil
+                let fresh = try await ClaudeKeychain.load(allowUI: allowKeychainUI)
+                guard fresh.accessToken != creds.accessToken else {
+                    throw ClaudeUsageAPIError.unauthorized
+                }
+                cachedCredentials = fresh
+                usage = try await ClaudeUsageAPI.fetch(accessToken: fresh.accessToken)
+            }
             log("→ claude: ответ получен")
             return ProviderUsage(
                 session: usage.session,
                 weekly: usage.weekly,
-                planLabel: creds.subscriptionType,
+                planLabel: cachedCredentials?.subscriptionType ?? creds.subscriptionType,
                 errorMessage: nil
             )
         } catch ClaudeKeychainError.notFound {
             log("→ claude: не залогинен (нет записи в Keychain) — скрываю из виджета")
             return ProviderUsage(notConfigured: true)
+        } catch ClaudeKeychainError.accessRequired {
+            log("→ claude: Keychain требует разрешения — жду клика по \"нужен доступ\" в виджете")
+            return ProviderUsage(errorMessage: "нужен доступ к Keychain", accessRequired: true)
         } catch ClaudeUsageAPIError.unauthorized {
+            cachedCredentials = nil
             log("→ claude: сессия истекла (401/403) — нужен повторный `claude`/`/login`")
             return ProviderUsage(errorMessage: "вход истёк", authExpired: true)
         } catch {

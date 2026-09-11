@@ -24,6 +24,12 @@ public struct ProviderUsage: Codable, Equatable {
     /// логин (HTTP 401/403) — отличается от временной ошибки сети/сервера:
     /// виджет показывает "вход истёк" вместо общего "ошибка".
     public let authExpired: Bool
+    /// true, если Host не смог прочитать токен без диалога Keychain: владелец
+    /// записи (Claude Code) переписал её и сбросил разрешения. Виджет
+    /// показывает "нужен доступ" — ссылку, по клику на которую Host читает
+    /// запись уже с диалогом. Так диалог появляется по действию пользователя,
+    /// а не внезапно посреди работы.
+    public let accessRequired: Bool
 
     public init(
         session: UsageWindow? = nil,
@@ -31,7 +37,8 @@ public struct ProviderUsage: Codable, Equatable {
         planLabel: String? = nil,
         errorMessage: String? = nil,
         notConfigured: Bool = false,
-        authExpired: Bool = false
+        authExpired: Bool = false,
+        accessRequired: Bool = false
     ) {
         self.session = session
         self.weekly = weekly
@@ -39,6 +46,7 @@ public struct ProviderUsage: Codable, Equatable {
         self.errorMessage = errorMessage
         self.notConfigured = notConfigured
         self.authExpired = authExpired
+        self.accessRequired = accessRequired
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,6 +57,7 @@ public struct ProviderUsage: Codable, Equatable {
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
         notConfigured = try c.decodeIfPresent(Bool.self, forKey: .notConfigured) ?? false
         authExpired = try c.decodeIfPresent(Bool.self, forKey: .authExpired) ?? false
+        accessRequired = try c.decodeIfPresent(Bool.self, forKey: .accessRequired) ?? false
     }
 }
 
